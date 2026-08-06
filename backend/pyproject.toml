@@ -1,0 +1,35 @@
+[project]
+name = "nexus-ai-backend"
+version = "0.1.0"
+description = "Nexus AI backend — FastAPI modular monolith."
+requires-python = ">=3.12"
+readme = "../README.md"
+
+# Intentionally minimal for Milestone M0.1 (repository scaffolding only).
+# Feature dependencies (SQLAlchemy, Alembic, Pydantic, Celery, Redis client,
+# JWT/argon2 libraries, Qdrant client, etc.) are added module-by-module in
+# later milestones, per the frozen Technical Design Document — not installed
+# speculatively ahead of the code that needs them.
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+]
+
+[project.optional-dependencies]
+# Mirrors the frontend scaffold's inclusion of eslint: baseline tooling,
+# not a feature library.
+dev = [
+    "ruff>=0.7",
+    "pytest>=8.3",
+]
+
+[tool.ruff]
+line-length = 100
+src = ["app", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

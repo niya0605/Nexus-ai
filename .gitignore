@@ -1,0 +1,35 @@
+# Root .gitignore — covers patterns shared across the monorepo.
+# Package-specific ignores (e.g. frontend/.gitignore) still apply on top of this.
+
+# --- Python (backend) ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# --- Node (frontend) ---
+node_modules/
+.next/
+out/
+build/
+*.tsbuildinfo
+
+# --- Environment / secrets ---
+.env
+.env.*
+!.env.example
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# --- Local Docker volumes (once docker-compose is introduced) ---
+docker/**/data/
