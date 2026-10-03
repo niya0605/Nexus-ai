@@ -1,26 +1,279 @@
 @import "tailwindcss";
 
+/*
+ * Design tokens — obsidian + champagne gold, per the Nexus AI visual
+ * redesign. Dark-mode-first (per the UX Specification, Principle 8):
+ * dark is the only look for now, applied unconditionally, not behind a
+ * `prefers-color-scheme` check.
+ *
+ * Palette intent: obsidian background, deep navy/charcoal surfaces,
+ * warm champagne gold as the ONE primary accent, a muted slate-violet
+ * used sparingly as a seconda ry tint only — never as a primary color,
+ * specifically to avoid the generic-purple-AI-product look.
+ */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #0b0a09;
+  --surface: #15141a;
+  --surface-raised: #1c1a20;
+  --foreground: #f2ede4;
+  --muted: #96907f;
+  --border: #26242a;
+
+  --accent: #c9a877;
+  --accent-hover: #ddc296;
+  --accent-foreground: #14120d;
+  --accent-soft: rgb(201 168 119 / 12%);
+
+  /* Secondary tint — used only for rare, small details (a tag, a node
+     dot), never for primary actions or large surfaces. */
+  --accent-secondary: #6f74a8;
+
+  /* The hero's "knowledge world" scene gets its own deep navy
+     atmosphere, distinct from the neutral obsidian page chrome around
+     it — matching the reference's cinematic, blue-toned night scene. */
+  --scene-bg-top: #101a31;
+  --scene-bg-mid: #0a101d;
+  --scene-bg-bottom: #090a11;
+  --scene-glow: #e8b969;
+  --scene-navy: #21345c;
+
+  /* A second, brighter secondary-tint shade used only for the hero
+     scene's characters, so the "team" reads as visually distinct
+     individuals rather than four copies of the same accent. */
+  --scene-violet-2: #9a7bba;
 }
 
 @theme inline {
   --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
   --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-border: var(--border);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-secondary: var(--accent-secondary);
+  --color-scene-bg-top: var(--scene-bg-top);
+  --color-scene-bg-mid: var(--scene-bg-mid);
+  --color-scene-bg-bottom: var(--scene-bg-bottom);
+  --color-scene-glow: var(--scene-glow);
+  --color-scene-navy: var(--scene-navy);
+  --color-scene-violet-2: var(--scene-violet-2);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  --font-pixel: var(--font-silkscreen);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+/* A faint whole-page ambient wash — not just inside the hero's boxed
+   scene — so the margins and gaps around it don't read as dead space. */
+body {
+  background:
+    radial-gradient(circle at 66% 34%, rgb(38 57 96 / 12%), transparent 26%),
+    radial-gradient(circle at 15% 50%, rgb(201 168 119 / 4%), transparent 20%),
+    var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+}
+
+/* A faint, technical dot-grid — deliberately restrained (this is the one
+   "atmosphere" texture used instead of a gradient blob). */
+.bg-grid {
+  background-image: radial-gradient(var(--border) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+/* ---------------------------------------------------------------------
+   Motion primitives for the knowledge-core scene (landing hero). Pure
+   CSS: rotating HUD rings, a pulsing core glow, and orbiting documents
+   built from the standard nested-rotation technique (outer element
+   rotates, a static radius offset carries the child outward, an inner
+   counter-rotation keeps the document chip itself upright) — no
+   WebGL/Three.js, no animation library.
+   ------------------------------------------------------------------- */
+@keyframes spin-slow {
+  to {
+    transform: rotate(360deg);
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+@keyframes spin-slow-reverse {
+  to {
+    transform: rotate(-360deg);
+  }
+}
+
+@keyframes core-pulse {
+  0%,
+  100% {
+    opacity: 0.8;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.12);
+  }
+}
+
+@keyframes core-float {
+  0%,
+  100% {
+    transform: translateY(0) rotate(45deg);
+  }
+  50% {
+    transform: translateY(-8px) rotate(45deg);
+  }
+}
+
+.animate-spin-slow {
+  animation: spin-slow 40s linear infinite;
+}
+
+.animate-spin-slow-reverse {
+  animation: spin-slow-reverse 60s linear infinite;
+}
+
+.animate-core-pulse {
+  animation: core-pulse 4s ease-in-out infinite;
+}
+
+.animate-core-float {
+  animation: core-float 3s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-spin-slow,
+  .animate-spin-slow-reverse,
+  .animate-core-pulse,
+  .animate-core-float {
+    animation: none !important;
+  }
+}
+
+/* ---------------------------------------------------------------------
+   General-purpose transition primitives (dashboard answer/source
+   preview entrances, mobile drawer). Small and short — content that's
+   already there, arriving smoothly, not a decorative flourish.
+   ------------------------------------------------------------------- */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slide-in-right {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.3s ease-out;
+}
+
+.animate-slide-in-right {
+  animation: slide-in-right 0.25s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-fade-in,
+  .animate-slide-in-right {
+    animation: none !important;
+  }
+}
+
+/* ---------------------------------------------------------------------
+   KnowledgeWorld scene: gentle float for documents/characters (idle
+   life, not orbiting), a soft star/particle twinkle, and a slow pulse
+   for the knowledge-graph connection lines.
+   ------------------------------------------------------------------- */
+@keyframes float-y {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
+}
+
+@keyframes node-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-7px);
+  }
+}
+
+@keyframes character-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-5px);
+  }
+}
+
+@keyframes twinkle {
+  0%,
+  100% {
+    opacity: 0.15;
+    transform: translateY(0);
+  }
+  50% {
+    opacity: 0.9;
+    transform: translateY(-3px);
+  }
+}
+
+@keyframes line-pulse {
+  0%,
+  100% {
+    stroke-opacity: 0.14;
+  }
+  50% {
+    stroke-opacity: 0.4;
+  }
+}
+
+.animate-float {
+  animation: float-y 6s ease-in-out infinite;
+}
+
+.animate-node-float {
+  animation: node-float 4s ease-in-out infinite;
+}
+
+.animate-character-bob {
+  animation: character-bob 2.8s ease-in-out infinite;
+}
+
+.animate-twinkle {
+  animation: twinkle 3s ease-in-out infinite;
+}
+
+.animate-line-pulse {
+  animation: line-pulse 5s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-float,
+  .animate-node-float,
+  .animate-character-bob,
+  .animate-twinkle,
+  .animate-line-pulse {
+    animation: none !important;
+  }
 }

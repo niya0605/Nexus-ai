@@ -33,3 +33,6 @@ Thumbs.db
 
 # --- Local Docker volumes (once docker-compose is introduced) ---
 docker/**/data/
+
+# Uploaded documents (local dev storage)
+backend/storage/

@@ -1,0 +1,115 @@
+# Nexus AI — Local Infrastructure (Milestone M0.2A)
+#
+# This file provisions ONLY the stateful infrastructure services a
+# developer needs running locally: Postgres, Redis, Qdrant, MinIO, and
+# Mailpit. It intentionally defines no application services (backend,
+# frontend, Celery workers), no health checks, no `depends_on` ordering,
+# and no environment file — see docker/README.md for what that means in
+# practice and what M0.2B adds on top of this.
+#
+# Postgres and MinIO credentials are read from environment variables
+# (${POSTGRES_USER}, ${MINIO_ROOT_USER}, etc.) that are NOT yet defined
+# anywhere in this repository — `docker compose up` will warn about them
+# until M0.2B introduces .env.example. This is intentional: it separates
+# "the stack's shape" (this milestone) from "the stack's configuration"
+# (M0.2B).
+
+networks:
+  nexus-network:
+    name: nexus-network
+    driver: bridge
+
+volumes:
+  postgres-data:
+  redis-data:
+  qdrant-data:
+  minio-data:
+
+services:
+  # --------------------------------------------------------------------
+  # PostgreSQL — primary relational datastore (source of truth for all
+  # tenant, identity, and document metadata; see docs/database/).
+  # --------------------------------------------------------------------
+  postgres:
+    image: postgres:17-alpine
+    container_name: nexus-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - nexus-network
+
+  # --------------------------------------------------------------------
+  # Redis — cache, session/refresh-token store, rate limiting, and the
+  # Celery broker/result backend (see the Technical Design Document,
+  # Redis Usage Strategy).
+  # --------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: nexus-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - nexus-network
+
+  # --------------------------------------------------------------------
+  # Qdrant — vector database for document chunk embeddings and semantic
+  # retrieval. Exposes both its REST (6333) and gRPC (6334) ports.
+  # --------------------------------------------------------------------
+  qdrant:
+    image: qdrant/qdrant:v1.11.0
+    container_name: nexus-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    networks:
+      - nexus-network
+
+  # --------------------------------------------------------------------
+  # MinIO — local, S3-compatible object storage standing in for the
+  # production storage abstraction's cloud backend (see the Technical
+  # Design Document, File Storage Strategy). Exposes the S3 API (9000)
+  # and the web console (9001).
+  # --------------------------------------------------------------------
+  minio:
+    image: minio/minio:RELEASE.2024-01-16T16-07-38Z
+    container_name: nexus-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    networks:
+      - nexus-network
+
+  # --------------------------------------------------------------------
+  # Mailpit — local SMTP capture and web UI, used in place of a real
+  # email provider for testing verification/reset emails in
+  # development. No persistent volume — captured mail is disposable.
+  # --------------------------------------------------------------------
+  mailpit:
+    image: axllent/mailpit:v1.20.0
+    container_name: nexus-mailpit
+    restart: unless-stopped
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+    networks:
+      - nexus-network

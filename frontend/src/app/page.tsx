@@ -1,9 +1,15 @@
-// Placeholder root route.
-//
-// Intentionally minimal for Milestone M0.1 (repository scaffolding only —
-// no UI implementation). Replaced with real routing/screens starting at
-// the milestone that implements the Product/UX Specification.
+import { Navbar } from "@/components/landing/Navbar";
+import { Hero } from "@/components/landing/Hero";
+import { ProductPreview } from "@/components/landing/ProductPreview";
 
 export default function Home() {
-  return null;
+  return (
+    <>
+      <Navbar />
+      <main className="flex-1">
+        <Hero />
+        <ProductPreview />
+      </main>
+    </>
+  );
 }

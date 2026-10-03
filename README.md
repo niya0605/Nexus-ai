@@ -22,6 +22,7 @@ Nexus AI lets a team:
 - Track workspace activity, usage, and content gaps through built-in
   analytics
 
+
 The full specification — vision, requirements, UX design, architecture,
 and API contract — is frozen and lives under `docs/`. This repository
 implements that specification directly; nothing here should diverge
