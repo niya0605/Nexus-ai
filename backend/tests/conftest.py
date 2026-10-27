@@ -1,8 +1,10 @@
-"""Shared pytest fixtures for the backend test suite.
+"""Shared pytest configuration for the backend test suite.
 
-No fixtures live here yet — `run_db_test` in backend/tests/db.py (added
-in Sprint 1A) is a plain helper function, not a pytest fixture, imported
-directly by each module's model tests. A fixture-based equivalent (e.g.
-an HTTP test client, once real API routes with database dependencies
-exist) is a natural future addition here.
+`run_db_test` / `run_http_test` in backend/tests/db.py are plain helpers,
+imported directly by each module's tests — not fixtures.
 """
+
+from app.config import settings
+
+# Tests assert production behaviour, regardless of local-dev conveniences in .env.
+settings.AUTO_VERIFY_EMAILS = False

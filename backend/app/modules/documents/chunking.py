@@ -1,62 +1,63 @@
-"""Document chunking logic - split documents into overlapping chunks."""
+"""Split page-aware document text into overlapping chunks that remember their page."""
 
 from typing import NamedTuple
 
+from app.modules.documents.parsers import PageText
 
-class ChunkSpec(NamedTuple):
-    """Specification for how to chunk documents."""
-    chunk_size: int = 800  # tokens per chunk
-    overlap: int = 100  # tokens of overlap between chunks
-    separator: str = "\n"  # prefer splitting on paragraphs
+# ~800 tokens per chunk with ~100 tokens of overlap, at ≈4 characters per token.
+CHUNK_CHARS = 3200
+OVERLAP_CHARS = 400
+# How far back from a window's end to look for whitespace, so words aren't cut.
+_BOUNDARY_SEARCH_CHARS = 200
 
 
 class PagedChunk(NamedTuple):
-    """A chunk of document text with page information."""
     content: str
     page_start: int
     page_end: int
 
 
-def split_text_into_chunks(text: str, spec: ChunkSpec = ChunkSpec()) -> list[PagedChunk]:
-    """Split document text into overlapping chunks, preserving page boundaries.
+def split_pages_into_chunks(
+    pages: list[PageText], chunk_chars: int = CHUNK_CHARS, overlap_chars: int = OVERLAP_CHARS
+) -> list[PagedChunk]:
+    """Chunk each page on its own, so every chunk cites exactly one page.
 
-    For now, without OCR/page-aware parsing, all chunks are assigned page_start=0.
-    Future versions with PyMuPDF will track actual page numbers.
+    Chunks never cross a page boundary: precise citations matter more than
+    filling every chunk to capacity. `page_end` mirrors `page_start` and is kept
+    so a future strategy can span pages without a schema change.
     """
-    # Simple token counting: approximate 1 token ≈ 4 characters
-    TOKEN_CHARS_RATIO = 4
-
-    chunk_chars = spec.chunk_size * TOKEN_CHARS_RATIO
-    overlap_chars = spec.overlap * TOKEN_CHARS_RATIO
-    stride = chunk_chars - overlap_chars
-
-    # Split on paragraphs (double newline) first, then by fixed size
-    paragraphs = text.split(spec.separator)
-
     chunks: list[PagedChunk] = []
-    current_pos = 0
-    chunk_idx = 0
-
-    while current_pos < len(text):
-        # Extract chunk
-        end_pos = min(current_pos + chunk_chars, len(text))
-        chunk_text = text[current_pos:end_pos]
-
-        if chunk_text.strip():
-            chunks.append(PagedChunk(
-                content=chunk_text.strip(),
-                page_start=0,  # TODO: track actual pages with PyMuPDF
-                page_end=0
-            ))
-
-        # Move to next chunk with overlap
-        current_pos += stride
-        chunk_idx += 1
-
+    for page in pages:
+        for content in _split_text(page.text, chunk_chars, overlap_chars):
+            chunks.append(PagedChunk(content, page.page, page.page))
     return chunks
+
+
+def _split_text(text: str, chunk_chars: int, overlap_chars: int) -> list[str]:
+    pieces: list[str] = []
+    start = 0
+    while start < len(text):
+        end = min(start + chunk_chars, len(text))
+        if end < len(text):
+            boundary = max(
+                text.rfind(" ", end - _BOUNDARY_SEARCH_CHARS, end),
+                text.rfind("\n", end - _BOUNDARY_SEARCH_CHARS, end),
+            )
+            if boundary > start:
+                end = boundary
+
+        piece = text[start:end].strip()
+        if piece:
+            pieces.append(piece)
+
+        if end >= len(text):
+            break
+        next_start = max(end - overlap_chars, start + 1)
+        word_start = text.find(" ", next_start, end)
+        start = word_start + 1 if word_start != -1 else next_start
+    return pieces
 
 
 def estimate_tokens(text: str) -> int:
     """Rough estimate of token count (1 token ≈ 4 chars)."""
     return len(text) // 4
-

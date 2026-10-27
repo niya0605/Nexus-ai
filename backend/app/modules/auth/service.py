@@ -75,9 +75,6 @@ async def register_user(session: AsyncSession, payload: RegisterRequest) -> User
     password is transformed here, into its Argon2 hash — never stored,
     logged, or returned in any other form.
     """
-    from app.config import settings
-    from app.modules.auth.models import UserStatus
-
     user = User(
         email=payload.email,
         password_hash=hash_password(payload.password),
@@ -88,8 +85,7 @@ async def register_user(session: AsyncSession, payload: RegisterRequest) -> User
         # Data Dictionary specifies.
     )
 
-    # Auto-verify emails in local environment for development
-    if settings.APP_ENV in ("local", "development"):
+    if settings.AUTO_VERIFY_EMAILS:
         user.status = UserStatus.ACTIVE
         user.email_verified_at = datetime.now(UTC)
 

@@ -161,9 +161,18 @@ class Settings(_BaseEnvSettings):
     # all), named here rather than hardcoded in the invitations service.
     INVITATION_TOKEN_EXPIRE_DAYS: PositiveInt = 7
 
+    # Skip email verification at registration — a local-dev convenience only.
+    AUTO_VERIFY_EMAILS: bool = False
+
     # --- AI (Google Gemini) ---
     GEMINI_API_KEY: str | None = None
-    GEMINI_MODEL: str = "gemini-3.8-flash"
+    GEMINI_MODEL: str = "gemini-3.5-flash-lite"
+    # Comma-separated, tried in order when the primary model is overloaded,
+    # rate-limited or times out. Free-tier quotas are per model (some only
+    # 20 requests/day), so more than one fallback keeps answers flowing.
+    GEMINI_FALLBACK_MODELS: str = "gemini-3.1-flash-lite,gemini-3.5-flash"
+    GEMINI_TIMEOUT_SECONDS: PositiveInt = 45
+    GEMINI_EMBEDDING_MODEL: str = "gemini-embedding-001"
     # Local-disk store for uploaded originals (MinIO is not running in local dev).
     DOCUMENT_STORAGE_DIR: str = "storage"
 

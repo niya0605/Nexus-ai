@@ -19,15 +19,51 @@ export interface DocumentItem {
 }
 
 export interface Citation {
+  /** The [n] marker the answer uses for this source (missing on answers saved before markers existed). */
+  number?: number;
   chunk_id: string;
   document_id: string;
   document_title: string;
+  /** 0 when the format has no pages (DOCX, TXT, MD). */
+  page_start: number;
+  page_end: number;
   excerpt: string;
 }
 
+export function pageLabel(c: Pick<Citation, "page_start" | "page_end">): string {
+  if (!c.page_start) return "";
+  return c.page_start === c.page_end ? `p. ${c.page_start}` : `pp. ${c.page_start}–${c.page_end}`;
+}
+
+export function citationHref(c: Citation): string {
+  return c.page_start ? `/documents/${c.document_id}?page=${c.page_start}` : `/documents/${c.document_id}`;
+}
+
 export interface ChatAnswer {
+  conversation_id: string;
   message: string;
   citations: Citation[];
+}
+
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  document_id: string | null;
+  message_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  citations: Citation[];
+  created_at: string;
+}
+
+export interface ConversationDetail extends Omit<ConversationSummary, "message_count"> {
+  messages: ChatMessage[];
 }
 
 async function rawFetch(path: string, init?: RequestInit) {
@@ -44,7 +80,7 @@ async function errorMessage(res: Response): Promise<string> {
 }
 
 /** Fetch with cookie auth; on 401 tries one token refresh, then sends the user to /login. */
-export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+async function authedFetch(path: string, init?: RequestInit): Promise<Response> {
   let res = await rawFetch(path, init);
 
   if (res.status === 401) {
@@ -62,7 +98,11 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   if (!res.ok) {
     throw new ApiError(await errorMessage(res), res.status);
   }
+  return res;
+}
 
+export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await authedFetch(path, init);
   if (res.status === 204) return undefined as T;
   const body = await res.json();
   return body.data as T;
@@ -113,12 +153,58 @@ export function documentFileUrl(workspaceId: string, documentId: string) {
   return `${API_BASE}/documents/${workspaceId}/${documentId}/file`;
 }
 
-export function askQuestion(workspaceId: string, message: string, documentId?: string) {
-  return apiFetch<ChatAnswer>(`/chat/${workspaceId}/ask`, {
+/**
+ * Ask with a streamed answer: `onText` receives each piece of the answer as the
+ * model writes it; resolves with the saved answer and the sources it cites.
+ */
+export async function askQuestionStream(
+  workspaceId: string,
+  message: string,
+  options: { documentId?: string; conversationId?: string | null },
+  onText: (text: string) => void,
+): Promise<ChatAnswer> {
+  const res = await authedFetch(`/chat/${workspaceId}/ask/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, document_id: documentId ?? null }),
+    body: JSON.stringify({
+      message,
+      document_id: options.documentId ?? null,
+      conversation_id: options.conversationId ?? null,
+    }),
   });
+  if (!res.body) throw new ApiError("Streaming is not supported by this browser.", 0);
+
+  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += value;
+    let end;
+    while ((end = buffer.indexOf("\n\n")) !== -1) {
+      const block = buffer.slice(0, end);
+      buffer = buffer.slice(end + 2);
+      const event = block.match(/^event: (.*)$/m)?.[1];
+      const data = JSON.parse(block.match(/^data: (.*)$/m)?.[1] ?? "{}");
+      if (event === "token") onText(data.text);
+      else if (event === "done") return data as ChatAnswer;
+      else if (event === "error") throw new ApiError(data.message, 502);
+    }
+  }
+  throw new ApiError("The answer was interrupted — please try again.", 0);
+}
+
+export function listConversations(workspaceId: string, documentId?: string) {
+  const query = documentId ? `?document_id=${encodeURIComponent(documentId)}` : "";
+  return apiFetch<ConversationSummary[]>(`/chat/${workspaceId}/conversations${query}`);
+}
+
+export function getConversation(workspaceId: string, conversationId: string) {
+  return apiFetch<ConversationDetail>(`/chat/${workspaceId}/conversations/${conversationId}`);
+}
+
+export function deleteConversation(workspaceId: string, conversationId: string) {
+  return apiFetch<void>(`/chat/${workspaceId}/conversations/${conversationId}`, { method: "DELETE" });
 }
 
 export async function logout() {
