@@ -170,6 +170,7 @@ class Settings(_BaseEnvSettings):
     # Used when the primary model is overloaded, rate-limited or times out.
     GEMINI_FALLBACK_MODEL: str | None = "gemini-3.5-flash"
     GEMINI_TIMEOUT_SECONDS: PositiveInt = 45
+    GEMINI_EMBEDDING_MODEL: str = "gemini-embedding-001"
     # Local-disk store for uploaded originals (MinIO is not running in local dev).
     DOCUMENT_STORAGE_DIR: str = "storage"
 

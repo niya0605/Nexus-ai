@@ -5,7 +5,7 @@ import logging
 import time
 
 from google import genai
-from google.genai import errors
+from google.genai import errors, types
 
 from app.config import settings
 
@@ -28,6 +28,14 @@ _RETRYABLE_STATUS = {429, 503, 504}
 # After a model is overloaded or times out, skip it for this long so every
 # question doesn't wait out the full timeout again.
 _COOLDOWN_SECONDS = 300
+# The Gemini API accepts at most 100 texts per embedding request; the free tier
+# allows ~30k embedding tokens per minute, so keep each request well below it.
+_EMBED_BATCH_SIZE = 100
+_EMBED_BATCH_TOKENS = 12_000
+_RATE_LIMIT_WAIT_SECONDS = 30
+_RATE_LIMIT_MAX_ATTEMPTS = 5
+# Must match the vector(N) column created in alembic 20261027_add_chunk_embeddings.
+EMBEDDING_DIMENSIONS = 768
 
 
 class LLMError(Exception):
@@ -71,6 +79,67 @@ class GeminiLLM:
 
     async def answer_question(self, question: str, context: str) -> str:
         return await self._generate(_ANSWER_PROMPT.format(context=context, question=question))
+
+    async def embed_documents(
+        self, texts: list[str], *, wait_on_rate_limit: bool = False
+    ) -> list[list[float]]:
+        """Embed chunks. With `wait_on_rate_limit`, a free-tier quota error waits
+        for the per-minute window to reset and retries (for background work);
+        otherwise it fails fast (for requests a user is waiting on)."""
+        return await self._embed(texts, "RETRIEVAL_DOCUMENT", wait_on_rate_limit)
+
+    async def embed_query(self, text: str) -> list[float]:
+        return (await self._embed([text], "RETRIEVAL_QUERY", False))[0]
+
+    async def _embed(
+        self, texts: list[str], task_type: str, wait_on_rate_limit: bool
+    ) -> list[list[float]]:
+        config = types.EmbedContentConfig(
+            task_type=task_type, output_dimensionality=EMBEDDING_DIMENSIONS
+        )
+        vectors: list[list[float]] = []
+        for batch in _token_budget_batches(texts):
+            for attempt in range(1, _RATE_LIMIT_MAX_ATTEMPTS + 1):
+                try:
+                    result = await asyncio.wait_for(
+                        self._client.aio.models.embed_content(
+                            model=settings.GEMINI_EMBEDDING_MODEL, contents=batch, config=config
+                        ),
+                        timeout=settings.GEMINI_TIMEOUT_SECONDS,
+                    )
+                    break
+                except TimeoutError as exc:
+                    raise LLMError("The embedding model did not respond in time.") from exc
+                except errors.APIError as exc:
+                    rate_limited = exc.code == 429
+                    if rate_limited and wait_on_rate_limit and attempt < _RATE_LIMIT_MAX_ATTEMPTS:
+                        logger.info("Embedding quota reached; retrying in %ss", _RATE_LIMIT_WAIT_SECONDS)
+                        await asyncio.sleep(_RATE_LIMIT_WAIT_SECONDS)
+                        continue
+                    reason = "free-tier quota reached" if rate_limited else (exc.message or exc.status)
+                    raise LLMError(f"Embedding failed: {reason}") from exc
+            vectors.extend(e.values for e in result.embeddings)
+        return vectors
+
+
+def _token_budget_batches(texts: list[str]) -> list[list[str]]:
+    """Group texts so each request stays under the per-request item limit and
+    well under the free tier's per-minute token budget."""
+    batches: list[list[str]] = []
+    current: list[str] = []
+    current_tokens = 0
+    for text in texts:
+        tokens = len(text) // 4 + 1
+        if current and (
+            len(current) >= _EMBED_BATCH_SIZE or current_tokens + tokens > _EMBED_BATCH_TOKENS
+        ):
+            batches.append(current)
+            current, current_tokens = [], 0
+        current.append(text)
+        current_tokens += tokens
+    if current:
+        batches.append(current)
+    return batches
 
 
 _llm_instance: GeminiLLM | None = None

@@ -10,11 +10,13 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.db.session import AsyncSessionFactory
 from app.modules.documents.chunking import split_pages_into_chunks
 from app.modules.documents.models import Document, DocumentStatus, DocumentVersion
 from app.modules.documents.chunks import Chunk
 from app.modules.documents.parsers import pages_to_display_text, parse_document_pages
 from app.core.exceptions import AppException
+from app.core.llm import LLMError, get_llm
 
 logger = logging.getLogger(__name__)
 
@@ -104,23 +106,70 @@ async def _store_chunks(
     db: AsyncSession, document_id: uuid.UUID, path: Path, file_type: str
 ) -> int:
     pages = await asyncio.to_thread(parse_document_pages, str(path), file_type)
-    chunks = split_pages_into_chunks(pages)
-    for spec in chunks:
-        db.add(
-            Chunk(
-                document_id=document_id,
-                page_start=spec.page_start,
-                page_end=spec.page_end,
-                content=spec.content,
-            )
+    chunks = [
+        Chunk(
+            document_id=document_id,
+            page_start=spec.page_start,
+            page_end=spec.page_end,
+            content=spec.content,
         )
+        for spec in split_pages_into_chunks(pages)
+    ]
+    db.add_all(chunks)
+    await _embed_chunks(chunks)
     await db.flush()
     return len(chunks)
 
 
+async def _embed_chunks(chunks: list[Chunk], *, wait_on_rate_limit: bool = False) -> bool:
+    """Best effort: on failure the chunks stay searchable by keyword and are
+    embedded later (background catch-up or scripts/backfill_embeddings.py)."""
+    if not chunks:
+        return True
+    try:
+        vectors = await get_llm().embed_documents(
+            [c.content for c in chunks], wait_on_rate_limit=wait_on_rate_limit
+        )
+    except LLMError as exc:
+        logger.warning("Embedding skipped for %d chunks: %s", len(chunks), exc)
+        return False
+    for chunk, vector in zip(chunks, vectors, strict=True):
+        chunk.embedding = vector
+    return True
+
+
+async def embed_missing_chunks(
+    db: AsyncSession,
+    *,
+    document_id: uuid.UUID | None = None,
+    batch_size: int = 100,
+    wait_on_rate_limit: bool = False,
+) -> int:
+    """Embed up to `batch_size` chunks that have no embedding yet; commits.
+    Returns how many were embedded (0 when none are left or the API failed)."""
+    stmt = select(Chunk).where(Chunk.embedding.is_(None)).order_by(Chunk.id).limit(batch_size)
+    if document_id is not None:
+        stmt = stmt.where(Chunk.document_id == document_id)
+    chunks = list((await db.execute(stmt)).scalars().all())
+    if not await _embed_chunks(chunks, wait_on_rate_limit=wait_on_rate_limit):
+        return 0
+    await db.commit()
+    return len(chunks)
+
+
+async def has_unembedded_chunks(db: AsyncSession, document_id: uuid.UUID) -> bool:
+    return bool(
+        await db.scalar(
+            select(Chunk.id)
+            .where(Chunk.document_id == document_id, Chunk.embedding.is_(None))
+            .limit(1)
+        )
+    )
+
+
 async def reprocess_document(db: AsyncSession, document: Document) -> int:
-    """Rebuild a document's chunks from its stored original (e.g. after the
-    chunking logic changes). Returns the new chunk count; commits."""
+    """Rebuild a document's chunks (and embeddings) from its stored original,
+    e.g. after the chunking logic changes. Returns the new chunk count; commits."""
     path = stored_file_path(document)
     if not path.exists():
         raise FileNotFoundError(f"No stored original for document {document.id}")
@@ -135,6 +184,17 @@ async def reprocess_document(db: AsyncSession, document: Document) -> int:
         document.status = DocumentStatus.FAILED
     await db.commit()
     return chunk_count
+
+
+async def embed_document_in_background(document_id: uuid.UUID) -> None:
+    """Runs after the upload response: finishes embedding a document whose
+    inline embedding hit the free-tier quota, waiting out rate limits."""
+    try:
+        async with AsyncSessionFactory() as db:
+            while await embed_missing_chunks(db, document_id=document_id, wait_on_rate_limit=True):
+                pass
+    except Exception:
+        logger.exception("Background embedding failed for document %s", document_id)
 
 
 async def get_document(

@@ -2,7 +2,7 @@
 
 import uuid
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,11 +12,14 @@ from app.modules.auth.dependencies import get_current_user_id
 from app.modules.documents.schemas import DocumentPublic, DocumentText
 from app.modules.documents.service import (
     create_document,
+    embed_document_in_background,
     get_document,
     get_document_text,
+    has_unembedded_chunks,
     list_documents,
     stored_file_path,
 )
+from app.modules.documents.models import DocumentStatus
 from app.modules.workspaces.dependencies import require_member, require_viewer
 
 router = APIRouter(prefix="/documents", tags=["documents"])
@@ -40,6 +43,7 @@ MAX_FILE_SIZE = 100 * 1024 * 1024
 async def upload_document(
     workspace_id: uuid.UUID,
     request: Request,
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
     user_id: uuid.UUID = Depends(get_current_user_id),
@@ -66,6 +70,8 @@ async def upload_document(
         file_type=file_ext,
         file_content=content,
     )
+    if doc.status == DocumentStatus.READY and await has_unembedded_chunks(db, doc.id):
+        background_tasks.add_task(embed_document_in_background, doc.id)
     return envelope(DocumentPublic.model_validate(doc), request)
 
 

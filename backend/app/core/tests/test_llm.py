@@ -99,3 +99,53 @@ def test_all_models_failing_raises_friendly_error(make_llm) -> None:
     llm, _ = make_llm({PRIMARY: _api_error(503, "UNAVAILABLE"), FALLBACK: _api_error(503, "UNAVAILABLE")})
     with pytest.raises(LLMError, match="busy right now"):
         asyncio.run(llm.answer_question("q", "ctx"))
+
+
+# --- embeddings ----------------------------------------------------------------
+
+
+class FakeEmbedModels:
+    def __init__(self, failures_before_success: int) -> None:
+        self.failures_left = failures_before_success
+        self.batch_sizes: list[int] = []
+
+    async def embed_content(self, *, model: str, contents: list[str], config):
+        if self.failures_left:
+            self.failures_left -= 1
+            raise _api_error(429, "RESOURCE_EXHAUSTED")
+        self.batch_sizes.append(len(contents))
+        return SimpleNamespace(embeddings=[SimpleNamespace(values=[0.0]) for _ in contents])
+
+
+@pytest.fixture
+def make_embedder(make_llm, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(llm_module, "_RATE_LIMIT_WAIT_SECONDS", 0)
+
+    def _make(failures_before_success: int = 0) -> tuple[GeminiLLM, FakeEmbedModels]:
+        llm, _ = make_llm({PRIMARY: "ok", FALLBACK: "ok"})
+        fake = FakeEmbedModels(failures_before_success)
+        llm._client = SimpleNamespace(aio=SimpleNamespace(models=fake))
+        return llm, fake
+
+    return _make
+
+
+def test_large_inputs_are_split_to_respect_token_budget(make_embedder) -> None:
+    llm, fake = make_embedder()
+    texts = ["word " * 2000] * 20  # ~2.5k tokens each, ~50k total
+    vectors = asyncio.run(llm.embed_documents(texts))
+    assert len(vectors) == 20
+    assert len(fake.batch_sizes) > 1
+    assert all(size * 2501 <= llm_module._EMBED_BATCH_TOKENS + 2501 for size in fake.batch_sizes)
+
+
+def test_quota_error_fails_fast_for_interactive_requests(make_embedder) -> None:
+    llm, _ = make_embedder(failures_before_success=1)
+    with pytest.raises(LLMError, match="quota"):
+        asyncio.run(llm.embed_documents(["text"]))
+
+
+def test_quota_error_is_retried_for_background_work(make_embedder) -> None:
+    llm, fake = make_embedder(failures_before_success=2)
+    assert len(asyncio.run(llm.embed_documents(["text"], wait_on_rate_limit=True))) == 1
+    assert fake.failures_left == 0
