@@ -1,70 +1,54 @@
-"""Document parsers - extract text from PDF, DOCX, TXT, MD files."""
+"""Document parsers - extract text from PDF, DOCX, TXT, MD files, page by page."""
 
 from pathlib import Path
+from typing import NamedTuple
+
+# Formats without real pages (DOCX, TXT, MD) report their whole text as page 0.
+NO_PAGE = 0
 
 
-def parse_text_file(file_path: str) -> str:
-    """Parse plain text file."""
-    return Path(file_path).read_text(encoding="utf-8")
+class PageText(NamedTuple):
+    page: int
+    text: str
 
 
-def parse_markdown_file(file_path: str) -> str:
-    """Parse Markdown file (just read as text for now)."""
-    return Path(file_path).read_text(encoding="utf-8")
-
-
-def parse_pdf_file(file_path: str) -> str:
-    """Parse PDF using PyMuPDF (fitz).
-
-    Requires: pip install pymupdf
-    """
+def _parse_pdf(file_path: str) -> list[PageText]:
     import pymupdf
 
-    doc = pymupdf.open(file_path)
-    text_parts = []
-
-    for page_num, page in enumerate(doc, 1):
-        text = page.get_text()
-        if text.strip():
-            text_parts.append(f"\n--- Page {page_num} ---\n{text}")
-
-    return "".join(text_parts)
+    with pymupdf.open(file_path) as doc:
+        return [PageText(number, page.get_text()) for number, page in enumerate(doc, 1)]
 
 
-def parse_docx_file(file_path: str) -> str:
-    """Parse DOCX file using python-docx.
+def _parse_docx(file_path: str) -> list[PageText]:
+    from docx import Document
 
-    Requires: pip install python-docx
-    """
-    try:
-        from docx import Document
-    except ImportError:
-        raise ImportError("python-docx not installed. Run: pip install python-docx")
-
-    doc = Document(file_path)
-    text_parts = []
-
-    for para in doc.paragraphs:
-        if para.text.strip():
-            text_parts.append(para.text)
-
-    return "\n".join(text_parts)
+    paragraphs = [p.text for p in Document(file_path).paragraphs if p.text.strip()]
+    return [PageText(NO_PAGE, "\n".join(paragraphs))]
 
 
-# Map file extensions to parsers
+def _parse_plain_text(file_path: str) -> list[PageText]:
+    return [PageText(NO_PAGE, Path(file_path).read_text(encoding="utf-8"))]
+
+
 PARSERS = {
-    "pdf": parse_pdf_file,
-    "txt": parse_text_file,
-    "md": parse_markdown_file,
-    "docx": parse_docx_file,
+    "pdf": _parse_pdf,
+    "docx": _parse_docx,
+    "txt": _parse_plain_text,
+    "md": _parse_plain_text,
 }
 
 
-def parse_document(file_path: str, file_type: str) -> str:
-    """Parse document based on file type."""
+def parse_document_pages(file_path: str, file_type: str) -> list[PageText]:
+    """Extract text per page. Pages with no text (e.g. scanned images) are kept
+    as empty strings so page numbering stays aligned with the original file."""
     parser = PARSERS.get(file_type.lower())
     if not parser:
         raise ValueError(f"Unsupported file type: {file_type}")
-
     return parser(file_path)
 
+
+def pages_to_display_text(pages: list[PageText]) -> str:
+    """Full text for the viewer — PDFs get a "--- Page N ---" header per page."""
+    if all(p.page == NO_PAGE for p in pages):
+        return "\n".join(p.text for p in pages)
+    return "".join(f"\n--- Page {p.page} ---\n{p.text}" for p in pages if p.text.strip())

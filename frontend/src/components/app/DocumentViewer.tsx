@@ -17,12 +17,13 @@ import {
 
 type Tab = "original" | "text";
 
-export function DocumentViewer({ documentId }: { documentId: string }) {
+export function DocumentViewer({ documentId, initialPage }: { documentId: string; initialPage?: number }) {
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
   const [doc, setDoc] = useState<DocumentItem | null>(null);
   const [text, setText] = useState("");
   const [hasOriginal, setHasOriginal] = useState(false);
   const [tab, setTab] = useState<Tab>("text");
+  const [page, setPage] = useState<number | undefined>(initialPage);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const [input, setInput] = useState("");
@@ -116,8 +117,10 @@ export function DocumentViewer({ documentId }: { documentId: string }) {
 
         {tab === "original" && canShowOriginal ? (
           <iframe
+            // Remount on page change: browsers ignore hash-only src updates on PDF iframes.
+            key={page ?? 0}
             title={doc.title}
-            src={documentFileUrl(workspaceId, documentId)}
+            src={`${documentFileUrl(workspaceId, documentId)}${page ? `#page=${page}` : ""}`}
             className="min-h-0 flex-1 bg-white"
           />
         ) : (
@@ -187,7 +190,12 @@ export function DocumentViewer({ documentId }: { documentId: string }) {
                 showOpenLinks={false}
                 onSelect={(c) => {
                   setSelected(c);
-                  setTab("text");
+                  if (canShowOriginal && doc.file_type === "pdf" && c.page_start > 0) {
+                    setPage(c.page_start);
+                    setTab("original");
+                  } else {
+                    setTab("text");
+                  }
                 }}
               />
             ))

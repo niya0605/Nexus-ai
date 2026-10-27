@@ -1,20 +1,23 @@
 """Chat service - Q&A over workspace documents with Gemini."""
 
-import logging
 import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppException
-from app.core.llm import get_llm
+from app.core.llm import LLMError, get_llm
 from app.modules.chat.retrieval import search_chunks
-
-logger = logging.getLogger(__name__)
 
 
 class LLMUnavailableError(AppException):
     status_code = 502
     error_code = "llm_unavailable"
+
+
+def _page_label(page_start: int, page_end: int) -> str:
+    if page_start <= 0:
+        return ""
+    return f", page {page_start}" if page_start == page_end else f", pages {page_start}-{page_end}"
 
 
 async def answer_question(
@@ -27,18 +30,22 @@ async def answer_question(
     if not hits:
         return "No processed documents found yet. Upload a document first, then ask again.", []
 
-    context = "\n\n".join(f"[Source: {doc.title}]\n{chunk.content}" for chunk, doc in hits)
+    context = "\n\n".join(
+        f"[Source: {doc.title}{_page_label(chunk.page_start, chunk.page_end)}]\n{chunk.content}"
+        for chunk, doc in hits
+    )
     try:
         answer = await get_llm().answer_question(question, context)
-    except Exception as exc:
-        logger.exception("Gemini request failed")
-        raise LLMUnavailableError(f"The AI model request failed: {exc}") from exc
+    except LLMError as exc:
+        raise LLMUnavailableError(str(exc)) from exc
 
     citations = [
         {
             "chunk_id": str(chunk.id),
             "document_id": str(doc.id),
             "document_title": doc.title,
+            "page_start": chunk.page_start,
+            "page_end": chunk.page_end,
             "excerpt": chunk.content[:300],
         }
         for chunk, doc in hits

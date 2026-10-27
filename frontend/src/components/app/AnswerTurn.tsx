@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { DocumentsIcon } from "@/components/icons";
-import type { Citation } from "@/lib/api";
+import { citationHref, pageLabel, type Citation } from "@/lib/api";
 
 export interface Turn {
   question: string;
@@ -70,13 +70,20 @@ export function AnswerTurn({ turn, selected, onSelect, showOpenLinks = true }: A
                           className={isSelected ? "mt-0.5 text-accent" : "mt-0.5 text-muted"}
                         />
                         <span className="min-w-0">
-                          <span className="block truncate text-sm font-medium text-foreground">{c.document_title}</span>
+                          <span className="flex items-baseline gap-2">
+                            <span className="truncate text-sm font-medium text-foreground">{c.document_title}</span>
+                            {pageLabel(c) && (
+                              <span className="shrink-0 rounded border border-accent/30 px-1.5 text-[11px] text-accent">
+                                {pageLabel(c)}
+                              </span>
+                            )}
+                          </span>
                           <span className="line-clamp-2 block text-xs text-muted">{c.excerpt}</span>
                         </span>
                       </button>
                       {showOpenLinks && (
                         <Link
-                          href={`/documents/${c.document_id}`}
+                          href={citationHref(c)}
                           className="px-3 py-2.5 text-xs whitespace-nowrap text-accent hover:text-accent-hover"
                         >
                           Open

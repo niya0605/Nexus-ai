@@ -6,7 +6,7 @@ import { SendIcon, SparkleIcon } from "@/components/icons";
 import { AnswerTurn, type Turn } from "@/components/app/AnswerTurn";
 import { DocumentUploader } from "@/components/app/DocumentUploader";
 import { DocumentList } from "@/components/app/DocumentList";
-import { askQuestion, type Citation } from "@/lib/api";
+import { askQuestion, citationHref, pageLabel, type Citation } from "@/lib/api";
 import { useWorkspaceDocuments } from "@/lib/useWorkspace";
 
 const SUGGESTIONS = ["Summarize my documents", "What are the key points?", "List any dates or deadlines mentioned"];
@@ -121,7 +121,12 @@ export function AskView() {
           <h2 className="text-sm font-semibold text-foreground">Source preview</h2>
           {selected ? (
             <div className="mt-3">
-              <p className="truncate text-sm font-medium text-foreground">{selected.document_title}</p>
+              <div className="flex items-baseline justify-between gap-2">
+                <p className="truncate text-sm font-medium text-foreground">{selected.document_title}</p>
+                <Link href={citationHref(selected)} className="shrink-0 text-xs text-accent hover:text-accent-hover">
+                  {pageLabel(selected) ? `Open ${pageLabel(selected)}` : "Open"} ↗
+                </Link>
+              </div>
               <p className="mt-3 rounded-lg bg-[#ddd9ce] p-4 text-sm leading-relaxed whitespace-pre-wrap text-[#272622]">
                 {selected.excerpt}
                 {selected.excerpt.length >= 300 ? "…" : ""}

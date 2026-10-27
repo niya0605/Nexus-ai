@@ -22,7 +22,19 @@ export interface Citation {
   chunk_id: string;
   document_id: string;
   document_title: string;
+  /** 0 when the format has no pages (DOCX, TXT, MD). */
+  page_start: number;
+  page_end: number;
   excerpt: string;
+}
+
+export function pageLabel(c: Pick<Citation, "page_start" | "page_end">): string {
+  if (!c.page_start) return "";
+  return c.page_start === c.page_end ? `p. ${c.page_start}` : `pp. ${c.page_start}–${c.page_end}`;
+}
+
+export function citationHref(c: Citation): string {
+  return c.page_start ? `/documents/${c.document_id}?page=${c.page_start}` : `/documents/${c.document_id}`;
 }
 
 export interface ChatAnswer {

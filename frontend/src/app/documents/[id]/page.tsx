@@ -8,9 +8,11 @@ export const metadata: Metadata = {
 
 export default async function DocumentPage(props: PageProps<"/documents/[id]">) {
   const { id } = await props.params;
+  const { page } = await props.searchParams;
+  const initialPage = Number(Array.isArray(page) ? page[0] : page);
   return (
     <AppShell>
-      <DocumentViewer documentId={id} />
+      <DocumentViewer documentId={id} initialPage={initialPage > 0 ? Math.floor(initialPage) : undefined} />
     </AppShell>
   );
 }

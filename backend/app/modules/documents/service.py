@@ -6,14 +6,14 @@ import logging
 import uuid
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.modules.documents.chunking import split_text_into_chunks
+from app.modules.documents.chunking import split_pages_into_chunks
 from app.modules.documents.models import Document, DocumentStatus, DocumentVersion
 from app.modules.documents.chunks import Chunk
-from app.modules.documents.parsers import parse_document
+from app.modules.documents.parsers import pages_to_display_text, parse_document_pages
 from app.core.exceptions import AppException
 
 logger = logging.getLogger(__name__)
@@ -88,11 +88,13 @@ async def get_document_text(db: AsyncSession, document: Document) -> str:
     from chunks for documents uploaded before originals were kept."""
     path = stored_file_path(document)
     if path.exists():
-        return await asyncio.to_thread(parse_document, str(path), document.file_type)
+        pages = await asyncio.to_thread(parse_document_pages, str(path), document.file_type)
+        return pages_to_display_text(pages)
 
     chunks = (
         await db.execute(
-            select(Chunk.content).where(Chunk.document_id == document.id).order_by(Chunk.id)  # uuid7 ids preserve insertion order; created_at is per-transaction
+            # uuid7 ids preserve insertion order; created_at is per-transaction
+            select(Chunk.content).where(Chunk.document_id == document.id).order_by(Chunk.id)
         )
     ).scalars().all()
     return "\n\n".join(chunks)
@@ -101,8 +103,8 @@ async def get_document_text(db: AsyncSession, document: Document) -> str:
 async def _store_chunks(
     db: AsyncSession, document_id: uuid.UUID, path: Path, file_type: str
 ) -> int:
-    text = await asyncio.to_thread(parse_document, str(path), file_type)
-    chunks = split_text_into_chunks(text)
+    pages = await asyncio.to_thread(parse_document_pages, str(path), file_type)
+    chunks = split_pages_into_chunks(pages)
     for spec in chunks:
         db.add(
             Chunk(
@@ -114,6 +116,25 @@ async def _store_chunks(
         )
     await db.flush()
     return len(chunks)
+
+
+async def reprocess_document(db: AsyncSession, document: Document) -> int:
+    """Rebuild a document's chunks from its stored original (e.g. after the
+    chunking logic changes). Returns the new chunk count; commits."""
+    path = stored_file_path(document)
+    if not path.exists():
+        raise FileNotFoundError(f"No stored original for document {document.id}")
+
+    await db.execute(delete(Chunk).where(Chunk.document_id == document.id))
+    try:
+        chunk_count = await _store_chunks(db, document.id, path, document.file_type)
+        document.status = DocumentStatus.READY if chunk_count else DocumentStatus.FAILED
+    except Exception:
+        logger.exception("Document %s failed to parse", document.id)
+        chunk_count = 0
+        document.status = DocumentStatus.FAILED
+    await db.commit()
+    return chunk_count
 
 
 async def get_document(
