@@ -12,6 +12,7 @@ Every future module's models.py is added here as it's created.
 """
 
 from app.modules.auth import models as _auth_models  # noqa: F401
+from app.modules.chat import models as _chat_models  # noqa: F401
 from app.modules.documents import models as _documents_models  # noqa: F401
 from app.modules.documents import chunks as _documents_chunks  # noqa: F401
 from app.modules.workspaces import models as _workspaces_models  # noqa: F401

@@ -15,13 +15,21 @@ _ANSWER_PROMPT = """You are Nexus AI, answering questions about the user's uploa
 Answer using ONLY the context below. If the context does not contain the answer,
 say "I don't have that information in your documents." Be concise and mention
 which source (and page, when given) the answer came from.
-
+{history}
 Context:
 {context}
 
 Question: {question}
 
 Answer:"""
+
+_HISTORY_BLOCK = """
+Earlier in this conversation (use it only to understand what the question refers
+to — facts must still come from the context):
+{turns}
+"""
+# Keep follow-up context short: it is resent with every question.
+_HISTORY_CHARS_PER_MESSAGE = 1500
 
 # Overloaded (503), rate-limited (429) or timed out server-side (504).
 _RETRYABLE_STATUS = {429, 503, 504}
@@ -77,8 +85,11 @@ class GeminiLLM:
             logger.warning("Gemini model unavailable, trying next: %s", last_error)
         raise LLMError(f"The AI model is busy right now — please try again shortly. ({last_error})")
 
-    async def answer_question(self, question: str, context: str) -> str:
-        return await self._generate(_ANSWER_PROMPT.format(context=context, question=question))
+    async def answer_question(
+        self, question: str, context: str, history: list[tuple[str, str]] | None = None
+    ) -> str:
+        """`history` is earlier (role, text) turns, oldest first; role is "user" or "assistant"."""
+        return await self._generate(build_answer_prompt(question, context, history))
 
     async def embed_documents(
         self, texts: list[str], *, wait_on_rate_limit: bool = False
@@ -120,6 +131,19 @@ class GeminiLLM:
                     raise LLMError(f"Embedding failed: {reason}") from exc
             vectors.extend(e.values for e in result.embeddings)
         return vectors
+
+
+def build_answer_prompt(
+    question: str, context: str, history: list[tuple[str, str]] | None = None
+) -> str:
+    history_block = ""
+    if history:
+        turns = "\n".join(
+            f"{'User' if role == 'user' else 'Nexus'}: {text[:_HISTORY_CHARS_PER_MESSAGE]}"
+            for role, text in history
+        )
+        history_block = _HISTORY_BLOCK.format(turns=turns)
+    return _ANSWER_PROMPT.format(history=history_block, context=context, question=question)
 
 
 def _token_budget_batches(texts: list[str]) -> list[list[str]]:

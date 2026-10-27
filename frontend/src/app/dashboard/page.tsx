@@ -7,10 +7,12 @@ export const metadata: Metadata = {
   description: "Ask your team's knowledge base anything, with every answer cited.",
 };
 
-export default function DashboardPage() {
+export default async function DashboardPage(props: PageProps<"/dashboard">) {
+  const { c } = await props.searchParams;
+  const conversationId = Array.isArray(c) ? c[0] : c;
   return (
     <AppShell>
-      <AskView />
+      <AskView initialConversationId={conversationId} />
     </AppShell>
   );
 }

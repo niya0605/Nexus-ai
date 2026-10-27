@@ -38,8 +38,30 @@ export function citationHref(c: Citation): string {
 }
 
 export interface ChatAnswer {
+  conversation_id: string;
   message: string;
   citations: Citation[];
+}
+
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  document_id: string | null;
+  message_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  citations: Citation[];
+  created_at: string;
+}
+
+export interface ConversationDetail extends Omit<ConversationSummary, "message_count"> {
+  messages: ChatMessage[];
 }
 
 async function rawFetch(path: string, init?: RequestInit) {
@@ -125,12 +147,33 @@ export function documentFileUrl(workspaceId: string, documentId: string) {
   return `${API_BASE}/documents/${workspaceId}/${documentId}/file`;
 }
 
-export function askQuestion(workspaceId: string, message: string, documentId?: string) {
+export function askQuestion(
+  workspaceId: string,
+  message: string,
+  options: { documentId?: string; conversationId?: string | null } = {},
+) {
   return apiFetch<ChatAnswer>(`/chat/${workspaceId}/ask`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, document_id: documentId ?? null }),
+    body: JSON.stringify({
+      message,
+      document_id: options.documentId ?? null,
+      conversation_id: options.conversationId ?? null,
+    }),
   });
+}
+
+export function listConversations(workspaceId: string, documentId?: string) {
+  const query = documentId ? `?document_id=${encodeURIComponent(documentId)}` : "";
+  return apiFetch<ConversationSummary[]>(`/chat/${workspaceId}/conversations${query}`);
+}
+
+export function getConversation(workspaceId: string, conversationId: string) {
+  return apiFetch<ConversationDetail>(`/chat/${workspaceId}/conversations/${conversationId}`);
+}
+
+export function deleteConversation(workspaceId: string, conversationId: string) {
+  return apiFetch<void>(`/chat/${workspaceId}/conversations/${conversationId}`, { method: "DELETE" });
 }
 
 export async function logout() {

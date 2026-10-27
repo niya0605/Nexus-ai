@@ -8,7 +8,6 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.chat.retrieval import query_terms, reciprocal_rank_fusion, search_chunks
-from app.modules.chat.service import answer_question
 from app.modules.documents.chunks import Chunk
 from app.modules.documents.models import DocumentStatus
 from app.modules.documents.service import create_document, embed_missing_chunks
@@ -119,19 +118,6 @@ def test_broad_question_falls_back_to_opening_chunks(fake_llm: FakeLLM) -> None:
 
         hits = await search_chunks(session, ws, "summarize this")
         assert [h[1].id for h in hits] == [doc.id]
-
-    run_db_test(body)
-
-
-def test_answer_includes_page_aware_citations(fake_llm: FakeLLM) -> None:
-    async def body(session: AsyncSession) -> None:
-        user, ws = await _user_and_workspace(session)
-        doc = await _upload_text(session, user, ws, "The launch is in August.")
-
-        answer, citations = await answer_question(session, ws, "When is the launch?")
-        assert answer.startswith("fake answer")
-        assert citations[0]["document_id"] == str(doc.id)
-        assert {"page_start", "page_end", "excerpt", "document_title"} <= citations[0].keys()
 
     run_db_test(body)
 

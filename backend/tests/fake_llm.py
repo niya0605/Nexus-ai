@@ -34,6 +34,8 @@ class FakeLLM:
     def __init__(self) -> None:
         self.embedding_available = True
         self.embedded_documents = 0
+        self.answers_fail = False
+        self.answer_calls: list[dict] = []
 
     async def embed_documents(
         self, texts: list[str], *, wait_on_rate_limit: bool = False
@@ -48,7 +50,12 @@ class FakeLLM:
             raise LLMError("embedding service unavailable (fake)")
         return fake_embedding(text)
 
-    async def answer_question(self, question: str, context: str) -> str:
+    async def answer_question(
+        self, question: str, context: str, history: list[tuple[str, str]] | None = None
+    ) -> str:
+        if self.answers_fail:
+            raise LLMError("The AI model is busy right now (fake)")
+        self.answer_calls.append({"question": question, "context": context, "history": history or []})
         return f"fake answer to: {question}"
 
 
