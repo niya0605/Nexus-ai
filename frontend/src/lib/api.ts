@@ -19,6 +19,8 @@ export interface DocumentItem {
 }
 
 export interface Citation {
+  /** The [n] marker the answer uses for this source (missing on answers saved before markers existed). */
+  number?: number;
   chunk_id: string;
   document_id: string;
   document_title: string;
@@ -78,7 +80,7 @@ async function errorMessage(res: Response): Promise<string> {
 }
 
 /** Fetch with cookie auth; on 401 tries one token refresh, then sends the user to /login. */
-export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+async function authedFetch(path: string, init?: RequestInit): Promise<Response> {
   let res = await rawFetch(path, init);
 
   if (res.status === 401) {
@@ -96,7 +98,11 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   if (!res.ok) {
     throw new ApiError(await errorMessage(res), res.status);
   }
+  return res;
+}
 
+export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await authedFetch(path, init);
   if (res.status === 204) return undefined as T;
   const body = await res.json();
   return body.data as T;
@@ -147,12 +153,17 @@ export function documentFileUrl(workspaceId: string, documentId: string) {
   return `${API_BASE}/documents/${workspaceId}/${documentId}/file`;
 }
 
-export function askQuestion(
+/**
+ * Ask with a streamed answer: `onText` receives each piece of the answer as the
+ * model writes it; resolves with the saved answer and the sources it cites.
+ */
+export async function askQuestionStream(
   workspaceId: string,
   message: string,
-  options: { documentId?: string; conversationId?: string | null } = {},
-) {
-  return apiFetch<ChatAnswer>(`/chat/${workspaceId}/ask`, {
+  options: { documentId?: string; conversationId?: string | null },
+  onText: (text: string) => void,
+): Promise<ChatAnswer> {
+  const res = await authedFetch(`/chat/${workspaceId}/ask/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -161,6 +172,26 @@ export function askQuestion(
       conversation_id: options.conversationId ?? null,
     }),
   });
+  if (!res.body) throw new ApiError("Streaming is not supported by this browser.", 0);
+
+  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += value;
+    let end;
+    while ((end = buffer.indexOf("\n\n")) !== -1) {
+      const block = buffer.slice(0, end);
+      buffer = buffer.slice(end + 2);
+      const event = block.match(/^event: (.*)$/m)?.[1];
+      const data = JSON.parse(block.match(/^data: (.*)$/m)?.[1] ?? "{}");
+      if (event === "token") onText(data.text);
+      else if (event === "done") return data as ChatAnswer;
+      else if (event === "error") throw new ApiError(data.message, 502);
+    }
+  }
+  throw new ApiError("The answer was interrupted — please try again.", 0);
 }
 
 export function listConversations(workspaceId: string, documentId?: string) {

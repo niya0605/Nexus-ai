@@ -31,12 +31,30 @@ class FakeModels:
             await asyncio.sleep(5)
         return SimpleNamespace(text=f"answer from {model}")
 
+    async def generate_content_stream(self, *, model: str, contents: str):
+        """Mirrors the SDK: awaiting returns an async iterator of chunks.
+        Behaviour "break" streams one chunk, then fails mid-answer."""
+        self.calls.append(model)
+        behaviour = self.behaviours[model]
+        if isinstance(behaviour, Exception):
+            raise behaviour
+
+        async def chunks():
+            if behaviour == "hang":
+                await asyncio.sleep(5)
+            for word in ("answer ", "from ", model):
+                yield SimpleNamespace(text=word)
+                if behaviour == "break":
+                    raise _api_error(503, "UNAVAILABLE")
+
+        return chunks()
+
 
 @pytest.fixture
 def make_llm(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(settings, "GEMINI_API_KEY", "test-key")
     monkeypatch.setattr(settings, "GEMINI_MODEL", PRIMARY)
-    monkeypatch.setattr(settings, "GEMINI_FALLBACK_MODEL", FALLBACK)
+    monkeypatch.setattr(settings, "GEMINI_FALLBACK_MODELS", FALLBACK)
     monkeypatch.setattr(settings, "GEMINI_TIMEOUT_SECONDS", 1)
 
     def _make(behaviours: dict[str, object]) -> tuple[GeminiLLM, FakeModels]:
@@ -149,3 +167,54 @@ def test_quota_error_is_retried_for_background_work(make_embedder) -> None:
     llm, fake = make_embedder(failures_before_success=2)
     assert len(asyncio.run(llm.embed_documents(["text"], wait_on_rate_limit=True))) == 1
     assert fake.failures_left == 0
+
+
+async def _collect(stream) -> list[str]:
+    return [text async for text in stream]
+
+
+def test_stream_yields_text_pieces(make_llm) -> None:
+    llm, fake = make_llm({PRIMARY: "ok", FALLBACK: "ok"})
+    assert asyncio.run(_collect(llm.stream_answer("q", "ctx"))) == ["answer ", "from ", PRIMARY]
+    assert fake.calls == [PRIMARY]
+
+
+@pytest.mark.parametrize("primary", [_api_error(503, "UNAVAILABLE"), "hang"])
+def test_stream_falls_back_before_first_text(make_llm, primary) -> None:
+    llm, fake = make_llm({PRIMARY: primary, FALLBACK: "ok"})
+    assert "".join(asyncio.run(_collect(llm.stream_answer("q", "ctx")))) == f"answer from {FALLBACK}"
+    assert fake.calls == [PRIMARY, FALLBACK]
+
+
+def test_stream_failure_after_text_raises(make_llm) -> None:
+    llm, fake = make_llm({PRIMARY: "break", FALLBACK: "ok"})
+    received: list[str] = []
+
+    async def run() -> None:
+        async for text in llm.stream_answer("q", "ctx"):
+            received.append(text)
+
+    with pytest.raises(LLMError, match="mid-answer"):
+        asyncio.run(run())
+    assert received == ["answer "]
+    assert fake.calls == [PRIMARY]
+
+
+def test_stream_all_models_failing_raises_friendly_error(make_llm) -> None:
+    llm, _ = make_llm({PRIMARY: _api_error(503, "UNAVAILABLE"), FALLBACK: _api_error(503, "UNAVAILABLE")})
+    with pytest.raises(LLMError, match="busy right now"):
+        asyncio.run(_collect(llm.stream_answer("q", "ctx")))
+
+
+def test_prompt_numbers_sources_and_asks_for_citations() -> None:
+    prompt = llm_module.build_answer_prompt("q", "[1] a.pdf, page 2\ntext")
+    assert "[1] a.pdf, page 2" in prompt
+    assert "Cite only sources you actually used" in prompt
+
+
+def test_fallbacks_are_tried_in_order(make_llm, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "GEMINI_FALLBACK_MODELS", f"{FALLBACK}, lite-model, {PRIMARY}")
+    quota = _api_error(429, "RESOURCE_EXHAUSTED")
+    llm, fake = make_llm({PRIMARY: quota, FALLBACK: quota, "lite-model": "ok"})
+    assert asyncio.run(llm.answer_question("q", "ctx")) == "answer from lite-model"
+    assert fake.calls == [PRIMARY, FALLBACK, "lite-model"]

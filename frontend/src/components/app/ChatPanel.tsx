@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { SendIcon } from "@/components/icons";
 import { AnswerTurn, type Turn } from "@/components/app/AnswerTurn";
-import { askQuestion, getConversation, type ChatMessage, type Citation } from "@/lib/api";
+import { askQuestionStream, getConversation, type ChatMessage, type Citation } from "@/lib/api";
 
 interface ChatPanelProps {
   workspaceId: string;
@@ -33,7 +33,9 @@ function messagesToTurns(messages: ChatMessage[]): Turn[] {
     if (m.role === "user") {
       turns.push({ question: m.content });
     } else if (turns.length) {
-      turns[turns.length - 1] = { ...turns[turns.length - 1], answer: m.content, citations: m.citations };
+      // Answers saved before [n] markers existed list every source, numbered in order.
+      const citations = m.citations.map((c, i) => ({ ...c, number: c.number ?? i + 1 }));
+      turns[turns.length - 1] = { ...turns[turns.length - 1], answer: m.content, citations };
     }
   }
   return turns;
@@ -102,9 +104,13 @@ export function ChatPanel({
     setAsking(true);
     setInput("");
     setTurns((prev) => [...prev, { question }]);
+    const updateLast = (update: (turn: Turn) => Turn) =>
+      setTurns((prev) => [...prev.slice(0, -1), update(prev[prev.length - 1])]);
     try {
-      const result = await askQuestion(workspaceId, question, { documentId, conversationId });
-      setTurns((prev) => [...prev.slice(0, -1), { question, answer: result.message, citations: result.citations }]);
+      const result = await askQuestionStream(workspaceId, question, { documentId, conversationId }, (text) =>
+        updateLast((turn) => ({ ...turn, answer: (turn.answer ?? "") + text, streaming: true })),
+      );
+      updateLast(() => ({ question, answer: result.message, citations: result.citations }));
       if (result.conversation_id !== conversationId) {
         createdHere.current = result.conversation_id;
         onConversationChange(result.conversation_id);
@@ -112,10 +118,8 @@ export function ChatPanel({
       if (result.citations[0]) (onAutoSelect ?? onSelect)(result.citations[0]);
       onActivity?.();
     } catch (err) {
-      setTurns((prev) => [
-        ...prev.slice(0, -1),
-        { question, error: err instanceof Error ? err.message : "Something went wrong." },
-      ]);
+      // A partly streamed answer was not saved, so don't leave it on screen.
+      updateLast(() => ({ question, error: err instanceof Error ? err.message : "Something went wrong." }));
     } finally {
       setAsking(false);
     }

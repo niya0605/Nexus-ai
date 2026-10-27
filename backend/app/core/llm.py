@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import time
+from collections.abc import AsyncIterator
 
 from google import genai
 from google.genai import errors, types
@@ -13,8 +14,11 @@ logger = logging.getLogger(__name__)
 
 _ANSWER_PROMPT = """You are Nexus AI, answering questions about the user's uploaded documents.
 Answer using ONLY the context below. If the context does not contain the answer,
-say "I don't have that information in your documents." Be concise and mention
-which source (and page, when given) the answer came from.
+say "I don't have that information in your documents." and cite nothing.
+Be concise. Each source in the context starts with a number in brackets, like [2].
+Cite the sources that support each statement with those numbers right after it,
+e.g. "The target is $2M [2]." Cite only sources you actually used; never cite a
+source just because it is in the context.
 {history}
 Context:
 {context}
@@ -56,14 +60,27 @@ class GeminiLLM:
             raise LLMError("GEMINI_API_KEY is not set in backend/.env")
         self._client = genai.Client(api_key=settings.GEMINI_API_KEY)
         self._models = [settings.GEMINI_MODEL]
-        if settings.GEMINI_FALLBACK_MODEL and settings.GEMINI_FALLBACK_MODEL != settings.GEMINI_MODEL:
-            self._models.append(settings.GEMINI_FALLBACK_MODEL)
+        for model in settings.GEMINI_FALLBACK_MODELS.split(","):
+            if model.strip() and model.strip() not in self._models:
+                self._models.append(model.strip())
         self._cooldown_until: dict[str, float] = {}
 
     def _models_in_order(self) -> list[str]:
         """Healthy models first, models still cooling down last (never dropped)."""
         now = time.monotonic()
         return sorted(self._models, key=lambda m: self._cooldown_until.get(m, 0) > now)
+
+    def _unavailable(self, model: str, exc: TimeoutError | errors.APIError) -> str:
+        """Put a failing model on cooldown and describe why; non-retryable errors raise."""
+        if isinstance(exc, TimeoutError):
+            reason = f"{model} did not respond within {settings.GEMINI_TIMEOUT_SECONDS}s"
+        elif exc.code in _RETRYABLE_STATUS:
+            reason = f"{model} is unavailable ({exc.code} {exc.status})"
+        else:
+            raise LLMError(f"{model}: {exc.message or exc.status}") from exc
+        self._cooldown_until[model] = time.monotonic() + _COOLDOWN_SECONDS
+        logger.warning("Gemini model unavailable, trying next: %s", reason)
+        return reason
 
     async def _generate(self, prompt: str) -> str:
         last_error = "no model configured"
@@ -75,14 +92,36 @@ class GeminiLLM:
                 )
                 self._cooldown_until.pop(model, None)
                 return response.text or ""
-            except TimeoutError:
-                last_error = f"{model} did not respond within {settings.GEMINI_TIMEOUT_SECONDS}s"
-            except errors.APIError as exc:
-                if exc.code not in _RETRYABLE_STATUS:
-                    raise LLMError(f"{model}: {exc.message or exc.status}") from exc
-                last_error = f"{model} is unavailable ({exc.code} {exc.status})"
-            self._cooldown_until[model] = time.monotonic() + _COOLDOWN_SECONDS
-            logger.warning("Gemini model unavailable, trying next: %s", last_error)
+            except (TimeoutError, errors.APIError) as exc:
+                last_error = self._unavailable(model, exc)
+        raise LLMError(f"The AI model is busy right now — please try again shortly. ({last_error})")
+
+    async def _stream(self, prompt: str) -> AsyncIterator[str]:
+        """Yield text as the model writes it. A model that fails before its first
+        text falls back to the next one; a failure after text was sent can't be
+        retried invisibly, so it raises LLMError."""
+        timeout = settings.GEMINI_TIMEOUT_SECONDS
+        last_error = "no model configured"
+        for model in self._models_in_order():
+            try:
+                stream = await asyncio.wait_for(
+                    self._client.aio.models.generate_content_stream(model=model, contents=prompt),
+                    timeout=timeout,
+                )
+                first = await asyncio.wait_for(anext(stream, None), timeout=timeout)
+            except (TimeoutError, errors.APIError) as exc:
+                last_error = self._unavailable(model, exc)
+                continue
+            self._cooldown_until.pop(model, None)
+            chunk = first
+            try:
+                while chunk is not None:
+                    if chunk.text:
+                        yield chunk.text
+                    chunk = await asyncio.wait_for(anext(stream, None), timeout=timeout)
+            except (TimeoutError, errors.APIError) as exc:
+                raise LLMError("The AI model stopped responding mid-answer — please try again.") from exc
+            return
         raise LLMError(f"The AI model is busy right now — please try again shortly. ({last_error})")
 
     async def answer_question(
@@ -90,6 +129,12 @@ class GeminiLLM:
     ) -> str:
         """`history` is earlier (role, text) turns, oldest first; role is "user" or "assistant"."""
         return await self._generate(build_answer_prompt(question, context, history))
+
+    def stream_answer(
+        self, question: str, context: str, history: list[tuple[str, str]] | None = None
+    ) -> AsyncIterator[str]:
+        """Like answer_question, but yields the answer's text as it is generated."""
+        return self._stream(build_answer_prompt(question, context, history))
 
     async def embed_documents(
         self, texts: list[str], *, wait_on_rate_limit: bool = False

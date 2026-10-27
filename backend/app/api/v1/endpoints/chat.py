@@ -5,13 +5,17 @@ conversations inside a workspace they belong to. Another user's conversation
 is indistinguishable from a missing one (404).
 """
 
+import json
 import uuid
+from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends, Request, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.responses import SuccessEnvelope, envelope
 from app.db.dependencies import get_db
+from app.db.session import AsyncSessionFactory
 from app.modules.auth.dependencies import get_current_user_id
 from app.modules.chat import service
 from app.modules.chat.schemas import (
@@ -48,6 +52,49 @@ async def ask_workspace(
     )
     return envelope(
         ChatResponse(conversation_id=conversation_id, message=answer, citations=citations), request
+    )
+
+
+@router.post("/{workspace_id}/ask/stream", dependencies=[Depends(require_viewer)])
+async def ask_workspace_stream(
+    workspace_id: uuid.UUID,
+    req: ChatRequest,
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    """Server-sent events: `token` events carry answer text as it is written,
+    then one `done` (conversation_id, message, citations) or `error` event.
+
+    Lookups that can fail (unknown conversation or document) run before the
+    stream starts, so those still return a normal JSON error with its status.
+    """
+    prepared = await service.prepare_question(
+        db,
+        workspace_id=workspace_id,
+        user_id=user_id,
+        question=req.message,
+        document_id=req.document_id,
+        conversation_id=req.conversation_id,
+    )
+
+    async def events() -> AsyncIterator[str]:
+        # The request's session isn't guaranteed to outlive the response, so
+        # the answer is saved through a session owned by the stream itself.
+        async with AsyncSessionFactory() as stream_db:
+            async for event in service.stream_answer(
+                stream_db,
+                prepared,
+                workspace_id=workspace_id,
+                user_id=user_id,
+                question=req.message,
+            ):
+                name = event.pop("event")
+                yield f"event: {name}\ndata: {json.dumps(event)}\n\n"
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 

@@ -166,9 +166,11 @@ class Settings(_BaseEnvSettings):
 
     # --- AI (Google Gemini) ---
     GEMINI_API_KEY: str | None = None
-    GEMINI_MODEL: str = "gemini-3.8-flash"
-    # Used when the primary model is overloaded, rate-limited or times out.
-    GEMINI_FALLBACK_MODEL: str | None = "gemini-3.5-flash"
+    GEMINI_MODEL: str = "gemini-3.5-flash-lite"
+    # Comma-separated, tried in order when the primary model is overloaded,
+    # rate-limited or times out. Free-tier quotas are per model (some only
+    # 20 requests/day), so more than one fallback keeps answers flowing.
+    GEMINI_FALLBACK_MODELS: str = "gemini-3.1-flash-lite,gemini-3.5-flash"
     GEMINI_TIMEOUT_SECONDS: PositiveInt = 45
     GEMINI_EMBEDDING_MODEL: str = "gemini-embedding-001"
     # Local-disk store for uploaded originals (MinIO is not running in local dev).

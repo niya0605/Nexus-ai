@@ -1,6 +1,8 @@
 """Chat service — Q&A over workspace documents with Gemini, saved as conversations."""
 
+import re
 import uuid
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import NamedTuple
 
@@ -47,15 +49,30 @@ def _page_label(page_start: int, page_end: int) -> str:
 
 
 def build_context(hits: list[Hit]) -> str:
+    """Number each source ([1], [2], …) so the model can cite the ones it uses."""
     return "\n\n".join(
-        f"[Source: {doc.title}{_page_label(chunk.page_start, chunk.page_end)}]\n{chunk.content}"
-        for chunk, doc in hits
+        f"[{number}] {doc.title}{_page_label(chunk.page_start, chunk.page_end)}\n{chunk.content}"
+        for number, (chunk, doc) in enumerate(hits, start=1)
     )
 
 
-def build_citations(hits: list[Hit]) -> list[dict]:
+# Citation markers in an answer: "[2]" or "[1, 3]".
+_CITATION_MARKER = re.compile(r"\[(\d+(?:\s*,\s*\d+)*)\]")
+
+
+def cited_numbers(answer: str) -> set[int]:
+    return {
+        int(n) for group in _CITATION_MARKER.findall(answer) for n in group.split(",")
+    }
+
+
+def build_citations(hits: list[Hit], answer: str) -> list[dict]:
+    """The sources the answer actually cites, keeping their [n] numbers so the
+    markers in the text match. Retrieved-but-unused passages are left out."""
+    used = cited_numbers(answer)
     return [
         {
+            "number": number,
             "chunk_id": str(chunk.id),
             "document_id": str(doc.id),
             "document_title": doc.title,
@@ -63,7 +80,8 @@ def build_citations(hits: list[Hit]) -> list[dict]:
             "page_end": chunk.page_end,
             "excerpt": chunk.content[:300],
         }
-        for chunk, doc in hits
+        for number, (chunk, doc) in enumerate(hits, start=1)
+        if number in used
     ]
 
 
@@ -131,8 +149,14 @@ async def save_exchange(
     citations: list[dict],
 ) -> Conversation:
     """Persist one question/answer pair (creating the conversation on its first
-    question) in a single commit — nothing is saved if answering failed."""
-    conversation = prepared.conversation
+    question) in a single commit — nothing is saved if answering failed.
+
+    `db` may be a different session from the one that prepared the question
+    (streaming saves after the request's session is done), so the conversation
+    is looked up again by id."""
+    conversation = (
+        await db.get(Conversation, prepared.conversation.id) if prepared.conversation else None
+    )
     if conversation is None:
         conversation = Conversation(
             workspace_id=workspace_id,
@@ -186,7 +210,7 @@ async def answer_question(
             raise LLMUnavailableError(str(exc)) from exc
     else:
         answer = NO_DOCUMENTS_ANSWER
-    citations = build_citations(prepared.hits)
+    citations = build_citations(prepared.hits, answer)
     conversation = await save_exchange(
         db,
         prepared,
@@ -197,6 +221,50 @@ async def answer_question(
         citations=citations,
     )
     return conversation.id, answer, citations
+
+
+async def stream_answer(
+    db: AsyncSession,
+    prepared: PreparedQuestion,
+    *,
+    workspace_id: uuid.UUID,
+    user_id: uuid.UUID,
+    question: str,
+) -> AsyncIterator[dict]:
+    """Answer a prepared question as events: {"event": "token", "text"} while the
+    model writes, then {"event": "done", conversation_id, message, citations}
+    once saved — or {"event": "error", code, message}, with nothing saved."""
+    if prepared.hits:
+        parts: list[str] = []
+        try:
+            async for text in get_llm().stream_answer(
+                question, build_context(prepared.hits), prepared.history
+            ):
+                parts.append(text)
+                yield {"event": "token", "text": text}
+        except LLMError as exc:
+            yield {"event": "error", "code": LLMUnavailableError.error_code, "message": str(exc)}
+            return
+        answer = "".join(parts)
+    else:
+        answer = NO_DOCUMENTS_ANSWER
+        yield {"event": "token", "text": answer}
+    citations = build_citations(prepared.hits, answer)
+    conversation = await save_exchange(
+        db,
+        prepared,
+        workspace_id=workspace_id,
+        user_id=user_id,
+        question=question,
+        answer=answer,
+        citations=citations,
+    )
+    yield {
+        "event": "done",
+        "conversation_id": str(conversation.id),
+        "message": answer,
+        "citations": citations,
+    }
 
 
 async def list_conversations(

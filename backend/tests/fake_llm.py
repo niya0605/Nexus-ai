@@ -7,6 +7,7 @@ exercise semantic search without the real model.
 
 import hashlib
 import math
+from collections.abc import AsyncIterator
 
 import pytest
 
@@ -35,6 +36,10 @@ class FakeLLM:
         self.embedding_available = True
         self.embedded_documents = 0
         self.answers_fail = False
+        # Fail after streaming the first piece of text.
+        self.stream_breaks = False
+        # Source numbers the fake answer cites, like Gemini's "[1]" markers.
+        self.cite = [1]
         self.answer_calls: list[dict] = []
 
     async def embed_documents(
@@ -56,7 +61,17 @@ class FakeLLM:
         if self.answers_fail:
             raise LLMError("The AI model is busy right now (fake)")
         self.answer_calls.append({"question": question, "context": context, "history": history or []})
-        return f"fake answer to: {question}"
+        markers = "".join(f" [{n}]" for n in self.cite)
+        return f"fake answer to: {question}{markers}"
+
+    async def stream_answer(
+        self, question: str, context: str, history: list[tuple[str, str]] | None = None
+    ) -> AsyncIterator[str]:
+        answer = await self.answer_question(question, context, history)
+        for i, word in enumerate(answer.split(" ")):
+            yield word if i == 0 else f" {word}"
+            if self.stream_breaks:
+                raise LLMError("The AI model stopped responding mid-answer (fake)")
 
 
 @pytest.fixture(autouse=True)
